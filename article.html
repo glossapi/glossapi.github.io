@@ -298,14 +298,14 @@
             <!-- Article Content -->
             <article id="article-content" class="hidden">
                 <!-- Hero Header -->
-                <header class="mb-10 text-center relative">
+                <header class="mb-4 text-center relative">
                     <!-- Glowing backdrop -->
                     <div
                         class="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[120%] h-[120%] bg-purple-600/10 blur-[100px] rounded-full pointer-events-none">
                     </div>
 
                     <div class="relative z-10">
-                        <div class="grid grid-cols-3 items-center w-full mb-0 px-2">
+                        <div class="grid grid-cols-3 items-center w-full mb-6 px-2">
                             <!-- Back Button (Minimalist) -->
                             <!-- Back Button (Minimalist - Refined) -->
                             <a href="#" id="back-link"
@@ -331,12 +331,9 @@
                         </div>
 
                         <h1 id="article-title"
-                            class="text-5xl md:text-7xl font-display font-bold text-white mb-8 leading-[1.1] tracking-tight drop-shadow-2xl">
+                            class="text-5xl md:text-7xl font-display font-bold text-white mb-0 leading-[1.1] tracking-tight drop-shadow-2xl">
                         </h1>
 
-                        <p id="article-description"
-                            class="text-lg md:text-xl text-gray-300 font-light leading-relaxed max-w-3xl mx-auto border-l-2 border-purple-500/50 pl-6">
-                        </p>
                     </div>
                 </header>
 
@@ -365,10 +362,10 @@
                     </div>
                 </div>
 
-                <!-- Source Link -->
+                <!-- Source Link (commented out)
                 <div id="source-container" class="mt-8 w-full hidden">
-                    <!-- Dynamic Content Injected Here -->
                 </div>
+                -->
 
                 <!-- Footer -->
                 <div class="mt-16 text-center">
@@ -549,6 +546,14 @@
 
     <!-- Article Fetching Logic -->
     <script>
+        // WordPress API Configuration
+        const WP_API_BASE = 'https://blog.glossapi.gr/wp-json/wp/v2';
+        // Categories for language filtering
+        const LANG_CATEGORIES = {
+            el: [7, 1],   // glossapi, uncategorized (Greek)
+            en: [23, 13]  // glossapi-en, uncategorized-en (English)
+        };
+
         const translations = {
             en: {
                 home: "Home",
@@ -598,14 +603,11 @@
             }
 
             try {
-                // Robust API Query Construction
-                const apiParams = new URLSearchParams();
-                apiParams.append('filters[slug][$eq]', slug);
-                apiParams.append('locale', currentLang);
-                apiParams.append('populate[cover][populate]', '*');
-                apiParams.append('populate[localizations][populate]', '*');
+                // WordPress API: fetch by slug with category filtering for language
+                const categoryIds = LANG_CATEGORIES[currentLang].join(',');
+                const apiUrl = `${WP_API_BASE}/posts?_embed&slug=${encodeURIComponent(slug)}&categories=${categoryIds}`;
 
-                const response = await fetch(`http://localhost:1337/api/articles?${apiParams.toString()}`);
+                const response = await fetch(apiUrl);
 
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
@@ -613,11 +615,11 @@
 
                 const data = await response.json();
 
-                if (!data.data || data.data.length === 0) {
+                if (!data || data.length === 0) {
                     throw new Error('Article not found');
                 }
 
-                const article = data.data[0];
+                const article = data[0];
                 currentArticle = article; // Store for switching
                 renderArticle(article);
 
@@ -711,40 +713,86 @@
         // 1. Check for existing localization in currentArticle.
         // 2. If found, redirect to it.
         // 3. If NOT found, redirect to current slug with new lang param (Triggering 404).
-        // Switch Language Logic:
-        // 1. Check for existing localization in currentArticle.
-        // 2. If found, redirect to it.
-        // 3. If NOT found, redirect to current slug with new lang param (Triggering 404).
-        function toggleLanguage(lang) {
+        // Switch Language Logic for WordPress:
+        // WordPress article translations have different slugs. We find translations by:
+        // 1. Matching featured_media ID (same featured image)
+        // 2. Matching similar publication date (within 24 hours)
+        async function toggleLanguage(lang) {
             if (currentLang === lang) return;
 
-            const targetLangSuffix = lang === 'en' ? '&lang=en' : '';
-
-            // 1. Try to find exact localization from loaded article data
-            if (currentArticle && currentArticle.localizations) {
-                const localizedArticle = currentArticle.localizations.find(loc => loc.locale === lang);
-                if (localizedArticle) {
-                    // Found -> Redirect to correct slug
-                    window.location.href = `article.html?slug=${localizedArticle.slug}${targetLangSuffix}`;
-                    return;
-                }
+            if (!currentArticle) {
+                // No article loaded, go to blog
+                window.location.href = lang === 'en' ? 'blog.html?lang=en' : 'blog.html';
+                return;
             }
 
-            // 2. Fallback Logic (Handles 404 states or missing translations)
-            // If we are on a 404 page, currentArticle is null, so we grab the slug from the URL.
-            const urlParams = new URLSearchParams(window.location.search);
-            const fallbackSlug = currentArticle ? currentArticle.slug : urlParams.get('slug');
+            // Show loading state on language buttons
+            const btnEn = document.getElementById('lang-en');
+            const btnEl = document.getElementById('lang-el');
+            const originalText = lang === 'en' ? btnEn.textContent : btnEl.textContent;
+            if (lang === 'en') btnEn.textContent = '...';
+            else btnEl.textContent = '...';
 
-            if (fallbackSlug) {
-                window.location.href = `article.html?slug=${fallbackSlug}${targetLangSuffix}`;
-            } else {
-                // If no slug at all, go to blog
+            try {
+                // Query articles in the target language
+                const targetCategories = LANG_CATEGORIES[lang].join(',');
+                const apiUrl = `${WP_API_BASE}/posts?_embed&per_page=50&categories=${targetCategories}`;
+                const response = await fetch(apiUrl);
+
+                if (!response.ok) throw new Error('Failed to fetch');
+
+                const articles = await response.json();
+
+                // Try to find a matching translation
+                let translatedArticle = null;
+
+                // Method 1: Match by featured_media (same featured image)
+                if (currentArticle.featured_media && currentArticle.featured_media !== 0) {
+                    translatedArticle = articles.find(a =>
+                        a.featured_media === currentArticle.featured_media &&
+                        a.id !== currentArticle.id
+                    );
+                }
+
+                // Method 2: Match by similar publication date (within 24 hours)
+                if (!translatedArticle) {
+                    const currentDate = new Date(currentArticle.date).getTime();
+                    const oneDayMs = 24 * 60 * 60 * 1000;
+
+                    translatedArticle = articles.find(a => {
+                        const articleDate = new Date(a.date).getTime();
+                        return Math.abs(articleDate - currentDate) < oneDayMs && a.id !== currentArticle.id;
+                    });
+                }
+
+                if (translatedArticle) {
+                    // Found translation - redirect to it
+                    const langParam = lang === 'en' ? '&lang=en' : '';
+                    window.location.href = `article.html?slug=${translatedArticle.slug}${langParam}`;
+                } else {
+                    // No translation found - show message and redirect to blog
+                    const t = translations[lang];
+                    alert(lang === 'en'
+                        ? 'English translation not available. Redirecting to blog.'
+                        : 'Η ελληνική μετάφραση δεν είναι διαθέσιμη. Μετάβαση στο blog.');
+                    window.location.href = lang === 'en' ? 'blog.html?lang=en' : 'blog.html';
+                }
+            } catch (error) {
+                console.error('Error finding translation:', error);
+                // On error, redirect to blog
                 window.location.href = lang === 'en' ? 'blog.html?lang=en' : 'blog.html';
             }
         }
 
         function renderArticle(article) {
-            const date = new Date(article.Date).toLocaleDateString(currentLang === 'el' ? 'el-GR' : 'en-US', {
+            // WordPress field mappings
+            const title = article.title?.rendered || '';
+            const excerpt = article.excerpt?.rendered?.replace(/<[^>]*>/g, '').trim() || '';
+            const content = article.content?.rendered || '';
+            const imageUrl = article._embedded?.['wp:featuredmedia']?.[0]?.source_url || null;
+            const sourceLink = article.link || null; // WordPress permalink
+
+            const date = new Date(article.date).toLocaleDateString(currentLang === 'el' ? 'el-GR' : 'en-US', {
                 weekday: 'long',
                 year: 'numeric',
                 month: 'long',
@@ -752,9 +800,7 @@
             });
 
             // Render Background Cover
-            // Render Background Cover
-            if (article.cover) {
-                const imageUrl = `http://localhost:1337${article.cover.url}`;
+            if (imageUrl) {
                 const coverContainer = document.createElement('div');
                 coverContainer.className = 'absolute top-0 left-0 w-full h-[85vh] z-0 pointer-events-none overflow-hidden';
                 coverContainer.innerHTML = `
@@ -775,26 +821,20 @@
                 `;
                 const main = document.querySelector('main');
                 if (main) {
-                    // Insert before main to sit behind it, but since main has z-10, we need to be careful.
-                    // Actually, main has z-10. This container is z-0.
-                    // We want this container to be at the top of the BODY, absolutely positioned.
                     document.body.insertBefore(coverContainer, document.body.firstChild);
                 }
             }
 
-            document.getElementById('article-title').textContent = article.title;
-            document.getElementById('article-description').textContent = article.description;
+            document.getElementById('article-title').innerHTML = title;
             document.getElementById('article-date').textContent = date;
 
-            // Render Body Blocks
+            // Render Body Content (WordPress provides pre-rendered HTML)
             const bodyContainer = document.getElementById('article-body');
-            if (article.Article && Array.isArray(article.Article)) {
-                bodyContainer.innerHTML = renderBlocks(article.Article);
-            }
+            bodyContainer.innerHTML = content;
 
-            // Render Source Link
+            /* Source Link rendering (commented out)
             const sourceContainer = document.getElementById('source-container');
-            if (article.Source) {
+            if (sourceLink) {
                 // Get translations for source section
                 const tSourceTitle = currentLang === 'el' ? translations.el.sourceTitle : translations.en.sourceTitle;
                 const tSourceDesc = currentLang === 'el' ? translations.el.sourceDesc : translations.en.sourceDesc;
@@ -813,7 +853,7 @@
                                 </div>
                             </div>
                             
-                            <a href="${article.Source}" target="_blank" rel="noopener noreferrer" 
+                            <a href="${sourceLink}" target="_blank" rel="noopener noreferrer" 
                                class="flex items-center gap-2 px-5 py-2 rounded-full bg-white/5 hover:bg-purple-600/20 border border-white/10 hover:border-purple-500/50 text-gray-300 hover:text-white text-xs font-bold uppercase tracking-widest transition-all group-hover:translate-x-1 whitespace-nowrap">
                                 <span>${tReadArticle}</span>
                                 <i class="fa-solid fa-arrow-right text-[10px]"></i>
@@ -825,57 +865,15 @@
             } else {
                 sourceContainer.classList.add('hidden');
             }
+            */
 
             document.getElementById('loading').classList.add('hidden');
             document.getElementById('article-content').classList.remove('hidden');
-            document.title = `${article.title} - GlossAPI Blog`;
+            document.title = `${title} - GlossAPI Blog`;
         }
 
-        // Simple Block Renderer for Strapi Blocks
-        function renderBlocks(blocks) {
-            return blocks.map(block => {
-                switch (block.type) {
-                    case 'paragraph':
-                        return `<p>${renderChildren(block.children)}</p>`;
-                    case 'heading':
-                        const Level = `h${block.level}`;
-                        return `<${Level}>${renderChildren(block.children)}</${Level}>`;
-                    case 'list':
-                        const Tag = block.format === 'ordered' ? 'ol' : 'ul';
-                        return `<${Tag}>${block.children.map(item => `<li>${renderChildren(item.children)}</li>`).join('')}</${Tag}>`;
-                    case 'quote':
-                        return `<blockquote>${renderChildren(block.children)}</blockquote>`;
-                    case 'code':
-                        return `<pre><code>${renderChildren(block.children)}</code></pre>`;
-                    case 'image':
-                        // Assuming image object structure, might need adjustment based on API response
-                        return `<img src="${block.image.url}" alt="${block.image.alternativeText || ''}" class="rounded-xl my-8 w-full">`;
-                    default:
-                        // Fallback for unknown blocks or simple text wrapper
-                        if (block.children) return `<p>${renderChildren(block.children)}</p>`;
-                        return '';
-                }
-            }).join('');
-        }
-
-        function renderChildren(children) {
-            if (!children) return '';
-            return children.map(child => {
-                let text = child.text;
-
-                if (child.bold) text = `<strong>${text}</strong>`;
-                if (child.italic) text = `<em>${text}</em>`;
-                if (child.underline) text = `<u>${text}</u>`;
-                if (child.strikethrough) text = `<s>${text}</s>`;
-                if (child.code) text = `<code>${text}</code>`;
-
-                if (child.type === 'link') {
-                    return `<a href="${child.url}" target="_blank">${renderChildren(child.children)}</a>`;
-                }
-
-                return text;
-            }).join('');
-        }
+        // Note: renderBlocks and renderChildren are no longer needed for WordPress
+        // as content comes pre-rendered in content.rendered
     </script>
 </body>
 
